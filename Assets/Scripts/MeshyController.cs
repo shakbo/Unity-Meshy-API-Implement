@@ -13,12 +13,7 @@ using GLTFast;
 using GLTFast.Logging; // Optional, for ConsoleLogger
 using System.Threading.Tasks; // Required for Task-based operations
 
-// --- ADD THIS FOR WINDOWS SPEECH RECOGNITION ---
-#if UNITY_STANDALONE_WIN || UNITY_WSA
-using UnityEngine.Windows.Speech;
-using System.Linq; // Required for KeywordRecognizer/DictationRecognizer setup
-#endif
-// --- END ADDITION ---
+// --- Removed Windows Speech Recognition using statements ---
 
 public class MeshyController : MonoBehaviour
 {
@@ -34,10 +29,10 @@ public class MeshyController : MonoBehaviour
     [SerializeField] private Button generateButton; // Generates Preview
     [SerializeField] private Button refineButton;   // Refines Preview
     [SerializeField] private Button placeButton;    // Places Current Preview Model
-    // --- ADD THIS ---
+    // Reference to the voice input button (Now intended for Meta Voice SDK)
     [SerializeField] private Button voiceInputButton; // <--- 在 Inspector 中指定你的語音按鈕
+    // Optional reference to the text on the voice button
     [SerializeField] private TextMeshProUGUI voiceButtonText; // <--- (可選) 在 Inspector 中指定按鈕上的文字元件
-    // --- END ADDITION ---
     [SerializeField] private RawImage previewImage; // Shows RenderTexture output
     [SerializeField] private TextMeshProUGUI statusText;
 
@@ -65,15 +60,8 @@ public class MeshyController : MonoBehaviour
     private string lastSuccessfulPreviewTaskId = null; // ID of the preview task to refine/place
     private bool isDraggingPreview = false; // Flag for rotating preview
     private bool isPlacementUIHidden = false; // Track UI state during placement
-    private string initialVoiceButtonText;
 
-    // --- ADD THIS FOR VOICE RECOGNITION ---
-#if UNITY_STANDALONE_WIN || UNITY_WSA
-    private DictationRecognizer dictationRecognizer;
-    private bool isListening = false;
-    private string initialVoiceButtonText = "🎙️"; // 儲存按鈕初始文字/圖標
-#endif
-    // --- END ADDITION ---
+    // --- Removed Windows Speech Recognition internal state variables ---
 
     // --- JSON Helper Classes (Unchanged from original) ---
     [System.Serializable] private class TextTo3DRequestPreview { public string mode = "preview"; public string prompt; public string art_style = "realistic"; public bool should_remesh = true; public int target_polycount = 30000; }
@@ -98,7 +86,7 @@ public class MeshyController : MonoBehaviour
             generateButton.interactable = false; // Disable if setup incomplete
             refineButton.interactable = false;
             placeButton.interactable = false;
-            if (voiceInputButton != null) voiceInputButton.interactable = false; // 同步禁用語音按鈕
+            if (voiceInputButton != null) voiceInputButton.interactable = false; // Also disable voice button initially
             return;
         }
 
@@ -109,29 +97,27 @@ public class MeshyController : MonoBehaviour
         refineButton.onClick.AddListener(OnRefineClick);
         placeButton.onClick.AddListener(OnPlaceButtonClick);
 
-        // --- ADD THIS ---
-        if (voiceInputButton != null)
+        // --- Voice Input Button Setup (Now points to Meta Voice SDK Activation) ---
+        // The actual listener for voiceInputButton needs to be set in the Inspector
+        // to call the Activate() or ToggleActivation() method on the [BuildingBlock] Dictation object.
+        // We removed the programmatic listener assignment for Windows Speech here.
+        if (voiceInputButton == null)
         {
-            if (voiceButtonText != null) initialVoiceButtonText = voiceButtonText.text; // 儲存初始文字
-            voiceInputButton.onClick.AddListener(ToggleVoiceInput); // 為語音按鈕添加監聽器
-            SetupVoiceRecognition(); // 初始化語音辨識
+            Debug.LogWarning("Voice Input Button not assigned in Inspector. Meta Voice SDK cannot be triggered by this button.");
         }
-        else
-        {
-            Debug.LogWarning("Voice Input Button not assigned in Inspector.");
-        }
-        // --- END ADDITION ---
+        // --- END VOICE SETUP MODIFICATION ---
 
 
         // Set initial button states
-        generateButton.interactable = true;
-        refineButton.interactable = false;
-        placeButton.interactable = false;
+        // Voice button interactability might depend on Meta Voice SDK state,
+        // but we'll enable it by default if assigned.
+        SetInteractableStates(true, false, false, voiceInputButton != null);
+
 
         // Setup listeners for preview rotation via code
         SetupEventTriggerListeners();
 
-        SetStatus("Enter a prompt and click Generate Preview, or use Voice Input (Win).");
+        SetStatus("Enter a prompt and click Generate Preview, or use Voice Input."); // Updated status
     }
 
     // Basic validation for required Inspector assignments
@@ -143,10 +129,8 @@ public class MeshyController : MonoBehaviour
         if (generateButton == null) { Debug.LogError("Generate Button not assigned!"); isValid = false; }
         if (refineButton == null) { Debug.LogError("Refine Button not assigned!"); isValid = false; }
         if (placeButton == null) { Debug.LogError("Place Button not assigned!"); isValid = false; }
-        // --- ADD THIS CHECK ---
-        // 語音按鈕不是核心功能，只給警告
-        if (voiceInputButton == null) { Debug.LogWarning("Voice Input Button not assigned!"); }
-        // --- END ADDITION ---
+        // Voice Input Button is now more important for Meta Quest
+        if (voiceInputButton == null) { Debug.LogWarning("Voice Input Button not assigned! Cannot trigger Meta Voice SDK via button."); }
         if (previewImage == null) { Debug.LogError("Preview Image (RawImage) not assigned!"); isValid = false; }
         if (statusText == null) { Debug.LogError("Status Text not assigned!"); isValid = false; }
         if (previewCamera == null) { Debug.LogError("Preview Camera not assigned!"); isValid = false; }
@@ -154,16 +138,12 @@ public class MeshyController : MonoBehaviour
         if (transparentMaterial == null) { Debug.LogError("Transparent Material not assigned!"); isValid = false; }
         if (uiPanelToToggle == null) { Debug.LogError("UI Panel To Toggle not assigned!"); isValid = false; }
         if (previewModelLayer == 0) { Debug.LogError("Preview Model Layer is not set in Inspector!"); isValid = false; }
-        else if (LayerMask.LayerToName(previewModelLayer).Length == 0 && previewModelLayer != 0)
+        else // Simplified layer check
         {
-            // This checks if the layer assigned in the inspector actually exists
-            // LayerMask stores a bitmask, LayerToName needs the index. We find the index from the bitmask.
-            int layerIndex = 0;
-            int layerValue = previewModelLayer.value;
-            while ((layerValue >>= 1) > 0) layerIndex++; // Find the index of the first set bit
-            if (LayerMask.LayerToName(layerIndex).Length == 0)
+            int layerIndex = LayerMaskUtility.GetLayerIndexFromMask(previewModelLayer);
+            if (layerIndex == -1 || LayerMask.LayerToName(layerIndex).Length == 0)
             {
-                Debug.LogError($"Preview Model Layer (index {layerIndex}) selected in Inspector does not exist! Configure it in Project Settings > Tags and Layers.");
+                Debug.LogError($"Preview Model Layer selected in Inspector does not exist! Configure it in Project Settings > Tags and Layers.");
                 isValid = false;
             }
         }
@@ -179,24 +159,23 @@ public class MeshyController : MonoBehaviour
         int width = Mathf.Max(1, (int)rawImageRect.rect.width);
         int height = Mathf.Max(1, (int)rawImageRect.rect.height);
 
-        previewRenderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.DefaultHDR); // Use HDR for better lighting if needed
+        previewRenderTexture = new RenderTexture(width, height, 24, RenderTextureFormat.DefaultHDR);
         if (!previewRenderTexture.Create()) { Debug.LogError("Failed to create RenderTexture!"); return; }
 
         previewCamera.targetTexture = previewRenderTexture;
         previewImage.texture = previewRenderTexture;
-        previewImage.color = Color.white; // Make RawImage visible
+        previewImage.color = Color.white;
 
-        // Configure Preview Camera and Container Layer
         int layerIndex = LayerMaskUtility.GetLayerIndexFromMask(previewModelLayer);
         if (layerIndex != -1)
         {
             SetLayerRecursively(previewModelContainer, layerIndex);
-            previewCamera.cullingMask = 1 << layerIndex; // Set culling mask to ONLY the preview layer
+            previewCamera.cullingMask = 1 << layerIndex;
         }
         else
         {
             Debug.LogError("Could not determine layer index from PreviewModelLayer mask.");
-            previewCamera.cullingMask = 0; // Render nothing if layer is invalid
+            previewCamera.cullingMask = 0;
         }
     }
 
@@ -204,9 +183,9 @@ public class MeshyController : MonoBehaviour
     void SetupEventTriggerListeners()
     {
         EventTrigger trigger = previewImage.gameObject.GetComponent<EventTrigger>();
-        if (trigger == null) { trigger = previewImage.gameObject.AddComponent<EventTrigger>(); } // Add if missing
+        if (trigger == null) { trigger = previewImage.gameObject.AddComponent<EventTrigger>(); }
 
-        trigger.triggers.Clear(); // Clear existing to avoid duplicates
+        trigger.triggers.Clear();
 
         AddEventTriggerListener(trigger, EventTriggerType.PointerDown, (data) => { OnPreviewPointerDown((PointerEventData)data); });
         AddEventTriggerListener(trigger, EventTriggerType.Drag, (data) => { OnPreviewDrag((PointerEventData)data); });
@@ -224,21 +203,18 @@ public class MeshyController : MonoBehaviour
     void Update()
     {
         // Handle placement ghost movement if placing model
-        if (isPlacingModel) // Changed condition to just check isPlacingModel
+        if (isPlacingModel)
         {
-            // --- ADD UI TOGGLE ---
             if (Input.GetKeyDown(uiToggleKey) && uiPanelToToggle != null)
             {
                 isPlacementUIHidden = !isPlacementUIHidden;
                 uiPanelToToggle.SetActive(!isPlacementUIHidden);
-                // Update status to reflect toggle state if needed
                 SetStatus($"Move mouse/camera to position. [{uiToggleKey}] Toggle UI. Left-Click: Place. Right-Click: Cancel.");
             }
-            // --- END UI TOGGLE ---
 
             if (currentPlacementModelInstance != null)
             {
-                HandlePlacement(); // Only handle placement if the instance exists
+                HandlePlacement();
             }
         }
     }
@@ -250,14 +226,13 @@ public class MeshyController : MonoBehaviour
         {
             if (previewCamera != null) previewCamera.targetTexture = null;
             if (previewImage != null) previewImage.texture = null;
-            previewRenderTexture.Release(); Destroy(previewRenderTexture);
+            previewRenderTexture.Release();
+            Destroy(previewRenderTexture);
         }
         if (currentPreviewModelInstance != null) Destroy(currentPreviewModelInstance);
         if (currentPlacementModelInstance != null) Destroy(currentPlacementModelInstance);
 
-        // --- ADD THIS ---
-        CleanupVoiceRecognition(); // 清理語音辨識資源
-        // --- END ADDITION ---
+        // --- Removed Windows Speech Cleanup ---
     }
 
     // Updates the status text UI
@@ -267,13 +242,13 @@ public class MeshyController : MonoBehaviour
         if (isError) Debug.LogError(message); else Debug.Log(message);
     }
 
-    // --- Button Click Handlers (Unchanged) ---
+    // --- Button Click Handlers (Now disable voice button during operations) ---
 
     void OnGeneratePreviewClick()
     {
         string prompt = promptInput.text;
         if (string.IsNullOrWhiteSpace(prompt)) { SetStatus("Please enter a prompt.", true); return; }
-        SetInteractableStates(false, false, false, false); // Disable buttons (including voice)
+        SetInteractableStates(false, false, false, false); // Disable all buttons
         CleanupPreviousModelsAndPreview();
         StartCoroutine(StartPreviewGeneration(prompt));
     }
@@ -281,7 +256,7 @@ public class MeshyController : MonoBehaviour
     void OnRefineClick()
     {
         if (string.IsNullOrEmpty(lastSuccessfulPreviewTaskId)) { SetStatus("No successful preview available to refine.", true); return; }
-        SetInteractableStates(false, false, false, false); // Disable buttons (including voice)
+        SetInteractableStates(false, false, false, false); // Disable all buttons
         StartCoroutine(StartRefineGeneration(lastSuccessfulPreviewTaskId));
     }
 
@@ -293,229 +268,21 @@ public class MeshyController : MonoBehaviour
         currentPlacementModelInstance = Instantiate(currentPreviewModelInstance);
         currentPlacementModelInstance.name = "Placement_" + currentPreviewModelInstance.name;
         currentPlacementModelInstance.SetActive(true);
-        // currentPlacementModelInstance.transform.rotation = Quaternion.identity; // Optional: Reset rotation
 
-        SetLayerRecursively(currentPlacementModelInstance, LayerMask.NameToLayer("Default")); // Move to default layer
-        SetModelTransparency(currentPlacementModelInstance, true); // Make transparent
+        SetLayerRecursively(currentPlacementModelInstance, LayerMask.NameToLayer("Default"));
+        SetModelTransparency(currentPlacementModelInstance, true);
 
         isPlacingModel = true;
-        SetInteractableStates(false, false, false, false); // Disable buttons during placement (including voice)
+        SetInteractableStates(false, false, false, false); // Disable all buttons during placement
         SetStatus("Move mouse to position, Left-Click to place, Right-Click to cancel.");
 
-        if (uiPanelToToggle != null) uiPanelToToggle.SetActive(false); // Hide UI initially
-        isPlacementUIHidden = true; // Track state
-        if (mainCameraController != null) mainCameraController.SetActive(true); // Enable camera movement
+        if (uiPanelToToggle != null) uiPanelToToggle.SetActive(false);
+        isPlacementUIHidden = true;
+        if (mainCameraController != null) mainCameraController.SetActive(true);
     }
 
 
-    // --- Voice Input Logic ---
-
-#if UNITY_STANDALONE_WIN || UNITY_WSA
-    void SetupVoiceRecognition()
-    {
-        try
-        {
-            // 檢查系統是否支援語音辨識
-            if (PhraseRecognitionSystem.isSupported)
-            {
-                // 使用 DictationRecognizer 進行自由格式的語音輸入
-                dictationRecognizer = new DictationRecognizer();
-
-                // 訂閱事件
-                dictationRecognizer.DictationResult += HandleDictationResult;       // 最終辨識結果
-                dictationRecognizer.DictationHypothesis += HandleDictationHypothesis; // 辨識過程中的假設(部分結果)
-                dictationRecognizer.DictationComplete += HandleDictationComplete;   // 辨識完成 (不論成功、失敗、超時)
-                dictationRecognizer.DictationError += HandleDictationError;         // 辨識發生錯誤
-
-                if (voiceInputButton != null) voiceInputButton.interactable = true; // 啟用語音按鈕
-                SetStatus("Voice recognition ready (Windows).");
-                Debug.Log("Dictation Recognizer initialized.");
-            }
-            else
-            {
-                SetStatus("Voice recognition not supported on this system.", true);
-                Debug.LogError("PhraseRecognitionSystem not supported.");
-                if (voiceInputButton != null) voiceInputButton.interactable = false; // 禁用語音按鈕
-            }
-        }
-        catch (Exception e)
-        {
-            SetStatus($"Error initializing voice recognition: {e.Message}", true);
-            Debug.LogException(e);
-            if (voiceInputButton != null) voiceInputButton.interactable = false; // 初始化失敗也禁用
-        }
-    }
-
-    void ToggleVoiceInput()
-    {
-        if (dictationRecognizer == null)
-        {
-            SetStatus("Voice recognizer not initialized.", true);
-            return;
-        }
-
-        if (isListening) // 如果正在監聽，則停止
-        {
-            StopListening();
-        }
-        else // 否則，開始監聽
-        {
-            StartListening();
-        }
-    }
-
-    void StartListening()
-    {
-        // 避免重複啟動或在非就緒狀態下啟動
-        if (isListening || dictationRecognizer == null || dictationRecognizer.Status == SpeechSystemStatus.Running)
-        {
-            Debug.LogWarning("Already listening or recognizer not ready/running.");
-            return;
-        }
-
-        // 檢查是否有可用的麥克風
-        if (Microphone.devices.Length == 0)
-        {
-            SetStatus("No microphone detected!", true);
-            Debug.LogError("No microphone detected. Cannot start listening.");
-            return;
-        }
-
-        dictationRecognizer.Start(); // 啟動辨識器
-        isListening = true;
-        SetStatus("Listening... Speak your prompt.");
-        if (voiceButtonText != null) voiceButtonText.text = "Listening..."; // 更新按鈕文字提示
-        // 可選：改變按鈕顏色等視覺提示
-        // if (voiceInputButton != null) { /* Change button appearance */ }
-        Debug.Log("DictationRecognizer started.");
-    }
-
-    void StopListening()
-    {
-        // 避免在未監聽或非運行狀態下停止
-        if (!isListening || dictationRecognizer == null || dictationRecognizer.Status != SpeechSystemStatus.Running)
-        {
-            Debug.LogWarning("Not listening or recognizer not ready/not running.");
-            return;
-        }
-
-        dictationRecognizer.Stop(); // 停止辨識器
-        Debug.Log("DictationRecognizer stopped by user.");
-        // isListening 會在 HandleDictationComplete 中被設為 false
-        // 按鈕文字也會在 HandleDictationComplete 中被重設
-    }
-
-    // 處理最終辨識結果
-    private void HandleDictationResult(string text, ConfidenceLevel confidence)
-    {
-        Debug.Log($"Dictation Result: '{text}' (Confidence: {confidence})");
-        if (!string.IsNullOrEmpty(text))
-        {
-            // --- 核心：將辨識結果填入輸入框 ---
-            promptInput.text = text;
-            // --- ------------------------- ---
-            SetStatus($"Voice input received: {text.Substring(0, Math.Min(text.Length, 30))}..."); // 在狀態欄顯示部分結果
-        }
-        // 收到結果後通常會自動觸發 DictationComplete，不需要在這裡手動 StopListening()
-    }
-
-    // 處理辨識過程中的部分結果 (可選，用於即時反饋)
-    private void HandleDictationHypothesis(string text)
-    {
-        // Debug.Log($"Dictation Hypothesis: {text}");
-        SetStatus($"Listening... (Heard: {text.Substring(0, Math.Min(text.Length, 30))}...)"); // 狀態欄顯示部分聽到的內容
-        // 如果希望即時更新輸入框 (可能會有些干擾):
-        // promptInput.text = text;
-    }
-
-    // 處理辨識完成事件 (無論原因)
-    private void HandleDictationComplete(DictationCompletionCause cause)
-    {
-        isListening = false; // 重設監聽狀態
-        SetStatus($"Voice recognition stopped. Reason: {cause}"); // 顯示停止原因
-        if (voiceButtonText != null) voiceButtonText.text = initialVoiceButtonText; // 恢復按鈕文字
-        // 可選：恢復按鈕顏色等視覺提示
-        // if (voiceInputButton != null) { /* Reset button appearance */ }
-
-        // 檢查是否是因為錯誤或超時而停止
-        if (cause != DictationCompletionCause.Complete)
-        {
-            Debug.LogWarning($"Dictation completed unexpectedly: {cause}");
-            // 這裡可以考慮是否需要重新初始化辨識器，以防後續出錯
-            // CleanupVoiceRecognition();
-            // SetupVoiceRecognition();
-        }
-        else
-        {
-            Debug.Log("Dictation completed successfully.");
-        }
-    }
-
-    // 處理辨識錯誤事件
-    private void HandleDictationError(string error, int hresult)
-    {
-        isListening = false; // 重設監聽狀態
-        SetStatus($"Voice recognition error: {error} (HRESULT: {hresult})", true);
-        Debug.LogError($"Dictation Error: {error}\nHRESULT: {hresult}");
-        if (voiceButtonText != null) voiceButtonText.text = initialVoiceButtonText; // 恢復按鈕文字
-        // 可選：禁用按鈕或改變外觀提示錯誤
-        // if (voiceInputButton != null) { voiceInputButton.interactable = false; /* Reset appearance */ }
-
-        // 發生錯誤後，可能需要清理並重新初始化
-        // CleanupVoiceRecognition();
-        // SetupVoiceRecognition();
-    }
-
-    // 清理語音辨識相關資源
-    void CleanupVoiceRecognition()
-    {
-        if (dictationRecognizer != null)
-        {
-            // 取消訂閱事件，防止內存洩漏
-            dictationRecognizer.DictationResult -= HandleDictationResult;
-            dictationRecognizer.DictationHypothesis -= HandleDictationHypothesis;
-            dictationRecognizer.DictationComplete -= HandleDictationComplete;
-            dictationRecognizer.DictationError -= HandleDictationError;
-
-            // 如果辨識器仍在運行，則停止它
-            if (dictationRecognizer.Status == SpeechSystemStatus.Running)
-            {
-                dictationRecognizer.Stop();
-                Debug.Log("Stopped running DictationRecognizer during cleanup.");
-            }
-            dictationRecognizer.Dispose(); // 釋放資源
-            dictationRecognizer = null;
-            Debug.Log("DictationRecognizer disposed.");
-        }
-        isListening = false; // 確保狀態被重設
-    }
-
-#else
-    // 為非 Windows 平台提供提示或禁用功能
-    void SetupVoiceRecognition()
-    {
-        Debug.LogWarning("Voice recognition via UnityEngine.Windows.Speech is only available on Windows Standalone/UWP builds.");
-        if (voiceInputButton != null)
-        {
-            voiceInputButton.interactable = false; // 禁用按鈕
-            if (voiceButtonText != null) voiceButtonText.text = "N/A"; // 修改按鈕文字
-        }
-        SetStatus("Voice input unavailable on this platform.");
-    }
-
-    void ToggleVoiceInput()
-    {
-        SetStatus("Voice input unavailable on this platform.", true);
-    }
-
-     void CleanupVoiceRecognition()
-     {
-         // 在非 Windows 平台，此實現無需清理
-     }
-
-#endif
-
-    // --- End Voice Input Logic ---
+    // --- Removed Windows Voice Input Logic ---
 
 
     // --- State Management ---
@@ -528,35 +295,21 @@ public class MeshyController : MonoBehaviour
         lastSuccessfulPreviewTaskId = null;
         isPlacingModel = false;
         originalMaterials.Clear();
-        // Don't clear previewImage texture, let it show the last rendered frame or background
     }
 
     // Helper to set interactable state of all main action buttons
-    // Overload to include voice button state
     void SetInteractableStates(bool generate, bool refine, bool place, bool voice)
     {
         if (generateButton != null) generateButton.interactable = generate;
         if (refineButton != null) refineButton.interactable = refine;
         if (placeButton != null) placeButton.interactable = place;
-#if UNITY_STANDALONE_WIN || UNITY_WSA // Only control voice button on supported platforms
-        if (voiceInputButton != null) voiceInputButton.interactable = voice && (dictationRecognizer != null); // Also check if recognizer is ready
-#else
-        if (voiceInputButton != null) voiceInputButton.interactable = false; // Always disabled on other platforms
-#endif
-    }
-    // Original overload (calls the new one, assuming voice should be enabled if others are)
-    void SetInteractableStates(bool generate, bool refine, bool place)
-    {
-        // Default: if generate is enabled, voice should also be potentially enabled
-        // Placement state might disable voice too. Refine state depends on preview.
-        bool enableVoice = generate && !isPlacingModel;
-        SetInteractableStates(generate, refine, place, enableVoice);
+        // Control voice button interactability - assuming it exists
+        if (voiceInputButton != null) voiceInputButton.interactable = voice;
     }
 
 
-    // --- Workflow Coroutines (Unchanged, but check SetInteractableStates calls) ---
+    // --- Workflow Coroutines (Now use the 4-parameter SetInteractableStates) ---
 
-    // Handles the Preview task creation, polling, and loading
     IEnumerator StartPreviewGeneration(string prompt)
     {
         SetStatus("Starting Preview generation...");
@@ -567,7 +320,7 @@ public class MeshyController : MonoBehaviour
         if (string.IsNullOrEmpty(previewTaskId))
         {
             SetStatus("Failed to create preview task.", true);
-            SetInteractableStates(true, false, false, true); // Re-enable generate & voice only
+            SetInteractableStates(true, false, false, true); // Re-enable generate & voice
             yield break;
         }
         SetStatus($"Preview task created ({previewTaskId}). Polling status...");
@@ -578,7 +331,7 @@ public class MeshyController : MonoBehaviour
         {
             string errorMsg = previewStatus?.task_error?.message ?? "Polling failed or task did not succeed.";
             SetStatus($"Preview task did not succeed: {errorMsg}", true);
-            SetInteractableStates(true, false, false, true); // Re-enable generate & voice only
+            SetInteractableStates(true, false, false, true); // Re-enable generate & voice
             yield break;
         }
 
@@ -589,22 +342,19 @@ public class MeshyController : MonoBehaviour
         if (string.IsNullOrEmpty(previewModelUrl))
         {
             SetStatus("Preview succeeded, but no GLB model URL found.", true);
-            // Allow generate, allow refine (based on task success), disallow place, allow voice
-            SetInteractableStates(true, true, false, true);
+            SetInteractableStates(true, true, false, true); // Allow generate, refine, voice
             yield break;
         }
 
         yield return StartCoroutine(LoadModelIntoPreview(previewModelUrl));
 
-        // Final state: Allow generating new, refining this one, placing this one (if loaded), allow voice
         bool canPlace = currentPreviewModelInstance != null;
-        SetInteractableStates(true, true, canPlace, true);
+        SetInteractableStates(true, true, canPlace, true); // Allow generate, refine, place (if loaded), voice
         if (currentPreviewModelInstance != null) { SetStatus($"Preview model loaded ({lastSuccessfulPreviewTaskId}). Ready to Refine, Place, or Rotate."); }
         else { SetStatus($"Preview task succeeded ({lastSuccessfulPreviewTaskId}), but preview GLB loading failed. Ready to Refine.", true); }
     }
 
-    // Handles the Refine task creation, polling, and loading (replaces preview model)
-    IEnumerator StartRefineGeneration(string previewTaskIdToRefine) // Input is the PREVIEW task ID
+    IEnumerator StartRefineGeneration(string previewTaskIdToRefine)
     {
         SetStatus($"Starting Refine task based on {previewTaskIdToRefine}...");
 
@@ -618,10 +368,9 @@ public class MeshyController : MonoBehaviour
         if (string.IsNullOrEmpty(newTaskidFromRefine))
         {
             SetStatus("Failed to initiate refine task request or get a valid Task ID from response.", true);
-            // Restore previous interactable state (including voice)
             bool canPlace = currentPreviewModelInstance != null;
             bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
-            SetInteractableStates(true, canRefine, canPlace, true);
+            SetInteractableStates(true, canRefine, canPlace, true); // Restore previous state
             yield break;
         }
 
@@ -635,10 +384,9 @@ public class MeshyController : MonoBehaviour
         {
             string errorMsg = finalStatus?.task_error?.message ?? "Polling failed or task did not succeed.";
             SetStatus($"Refine task ({idToPoll}) did not succeed: {errorMsg}", true);
-            // Restore previous interactable state (including voice)
             bool canPlace = currentPreviewModelInstance != null;
             bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
-            SetInteractableStates(true, canRefine, canPlace, true);
+            SetInteractableStates(true, canRefine, canPlace, true); // Restore previous state
             yield break;
         }
         SetStatus($"Refine task ({idToPoll}) succeeded. Loading refined model...");
@@ -647,17 +395,15 @@ public class MeshyController : MonoBehaviour
         if (string.IsNullOrEmpty(modelUrl))
         {
             SetStatus($"Refine task ({idToPoll}) succeeded, but no GLB model URL found in the final status.", true);
-            // Allow generate, cannot refine refined, can place old preview, allow voice
             bool canPlace = currentPreviewModelInstance != null;
-            SetInteractableStates(true, false, canPlace, true);
+            SetInteractableStates(true, false, canPlace, true); // Cannot refine refined, allow place old preview
             yield break;
         }
 
         yield return StartCoroutine(LoadModelIntoPreview(modelUrl));
 
-        // Final State: Allow generate, cannot refine further, can place refined, allow voice
         bool refinedLoaded = currentPreviewModelInstance != null;
-        SetInteractableStates(true, false, refinedLoaded, true);
+        SetInteractableStates(true, false, refinedLoaded, true); // Allow generate, cannot refine, place refined, voice
         if (currentPreviewModelInstance != null)
         {
             SetStatus($"Refined model loaded (from Task {idToPoll}). Ready to Place or Rotate.");
@@ -675,7 +421,7 @@ public class MeshyController : MonoBehaviour
         string jsonPayload = "";
         object requestData;
 
-        try // Wrap payload creation in try-catch
+        try
         {
             if (isPreview)
             {
@@ -692,17 +438,13 @@ public class MeshyController : MonoBehaviour
         {
             SetStatus($"Error creating JSON payload for {taskType} task: {e.Message}", true);
             callback?.Invoke(null);
-            yield break; // Stop if payload creation fails
+            yield break;
         }
 
-
         byte[] bodyRaw = Encoding.UTF8.GetBytes(jsonPayload);
-
-        // --- DETAILED LOGGING ---
         Debug.Log($"[{taskType.ToUpper()}] Sending Request to: {meshyApiUrl}");
-        Debug.Log($"[{taskType.ToUpper()}] Authorization Header: Bearer {apiKey?.Substring(0, Math.Min(apiKey.Length, 5))}..."); // Log partial key for verification
+        Debug.Log($"[{taskType.ToUpper()}] Authorization Header: Bearer {apiKey?.Substring(0, Math.Min(apiKey.Length, 5))}...");
         Debug.Log($"[{taskType.ToUpper()}] JSON Payload: {jsonPayload}");
-        // --- END DETAILED LOGGING ---
 
         using (UnityWebRequest request = new UnityWebRequest(meshyApiUrl, "POST"))
         {
@@ -714,16 +456,10 @@ public class MeshyController : MonoBehaviour
             SetStatus($"Sending {taskType} request...");
             yield return request.SendWebRequest();
 
-            // --- MORE DETAILED LOGGING ---
             Debug.Log($"[{taskType.ToUpper()}] Request Sent. Result: {request.result}, Response Code: {request.responseCode}");
-            if (!string.IsNullOrEmpty(request.error))
-            {
-                Debug.LogError($"[{taskType.ToUpper()}] Request Error: {request.error}");
-            }
+            if (!string.IsNullOrEmpty(request.error)) Debug.LogError($"[{taskType.ToUpper()}] Request Error: {request.error}");
             string responseJson = request.downloadHandler.text;
             Debug.Log($"[{taskType.ToUpper()}] Raw Response JSON: {responseJson}");
-            // --- END MORE DETAILED LOGGING ---
-
 
             if (request.result == UnityWebRequest.Result.Success)
             {
@@ -737,7 +473,7 @@ public class MeshyController : MonoBehaviour
                     }
                     else
                     {
-                        Debug.LogWarning($"[{taskType.ToUpper()}] Response did not contain a 'result' field directly. Attempting to parse as full TaskStatusResponse...");
+                        Debug.LogWarning($"[{taskType.ToUpper()}] Response did not contain 'result'. Trying full status...");
                         try
                         {
                             TaskStatusResponse fullResponse = JsonUtility.FromJson<TaskStatusResponse>(responseJson);
@@ -746,22 +482,19 @@ public class MeshyController : MonoBehaviour
                                 Debug.LogWarning($"[{taskType.ToUpper()}] Parsed full status response. Using ID: {fullResponse.id}");
                                 callback?.Invoke(fullResponse.id);
                             }
-                            else
-                            {
-                                throw new System.Exception($"Parsed TaskStatusResponse but no ID found. Original Response: {responseJson}");
-                            }
+                            else throw new System.Exception($"Parsed TaskStatusResponse but no ID. Original: {responseJson}");
                         }
                         catch (System.Exception parseEx)
                         {
-                            SetStatus($"{taskType} task request succeeded, but response parsing failed (no result/ID). Error: {parseEx.Message}", true);
-                            Debug.LogError($"Create Task ({taskType}) Response JSON: {responseJson}");
+                            SetStatus($"{taskType} task OK, but response parse failed (no result/ID). Error: {parseEx.Message}", true);
+                            Debug.LogError($"Create Task ({taskType}) JSON: {responseJson}");
                             callback?.Invoke(null);
                         }
                     }
                 }
                 catch (System.Exception e)
                 {
-                    SetStatus($"{taskType} task request succeeded, but response JSON parsing failed: {e.Message}", true);
+                    SetStatus($"{taskType} task OK, but JSON parse failed: {e.Message}", true);
                     Debug.LogError($"Create Task ({taskType}) Raw Response: {responseJson}");
                     callback?.Invoke(null);
                 }
@@ -776,32 +509,38 @@ public class MeshyController : MonoBehaviour
 
     IEnumerator PollTaskStatusCoroutine(string taskId, System.Action<TaskStatusResponse> callback, bool isRefinePolling)
     {
-        string pollUrl = meshyTaskStatusUrlBase + taskId; float timeWaited = 0f; string stage = isRefinePolling ? "Refine" : "Preview";
+        string pollUrl = meshyTaskStatusUrlBase + taskId;
+        float timeWaited = 0f;
+        string stage = isRefinePolling ? "Refine" : "Preview";
         while (timeWaited < maxPollingTimeSeconds)
         {
             using (UnityWebRequest request = UnityWebRequest.Get(pollUrl))
             {
-                request.SetRequestHeader("Authorization", $"Bearer {apiKey}"); yield return request.SendWebRequest();
+                request.SetRequestHeader("Authorization", $"Bearer {apiKey}");
+                yield return request.SendWebRequest();
                 if (request.result == UnityWebRequest.Result.Success)
                 {
                     try
                     {
-                        string responseJson = request.downloadHandler.text; TaskStatusResponse statusResponse = JsonUtility.FromJson<TaskStatusResponse>(responseJson);
+                        string responseJson = request.downloadHandler.text;
+                        TaskStatusResponse statusResponse = JsonUtility.FromJson<TaskStatusResponse>(responseJson);
                         if (statusResponse.status == "SUCCEEDED") { SetStatus($"{stage} task {taskId} Succeeded! Progress: {statusResponse.progress}%"); callback?.Invoke(statusResponse); yield break; }
-                        else if (statusResponse.status == "FAILED") { string errorMsg = statusResponse.task_error?.message ?? "No error message provided."; SetStatus($"{stage} task {taskId} Failed: {errorMsg}", true); callback?.Invoke(statusResponse); yield break; }
+                        else if (statusResponse.status == "FAILED") { string errorMsg = statusResponse.task_error?.message ?? "No error msg."; SetStatus($"{stage} task {taskId} Failed: {errorMsg}", true); callback?.Invoke(statusResponse); yield break; }
                         else if (statusResponse.status == "PENDING" || statusResponse.status == "IN_PROGRESS") { SetStatus($"{stage} task {taskId} Progress: {statusResponse.progress}% (Status: {statusResponse.status})"); }
-                        else { SetStatus($"{stage} task {taskId} has unexpected status: {statusResponse.status}. Raw: {responseJson}", true); callback?.Invoke(statusResponse); yield break; }
+                        else { SetStatus($"{stage} task {taskId} unexpected status: {statusResponse.status}. Raw: {responseJson}", true); callback?.Invoke(statusResponse); yield break; }
                     }
                     catch (System.Exception e) { SetStatus($"Polling {stage} task {taskId} failed - JSON Parse Error: {e.Message}. Response: {request.downloadHandler.text}", true); callback?.Invoke(null); yield break; }
                 }
                 else { SetStatus($"Polling {stage} task {taskId} failed: {request.responseCode} {request.error} - {request.downloadHandler.text}", true); callback?.Invoke(null); yield break; }
             }
-            yield return new WaitForSeconds(pollingIntervalSeconds); timeWaited += pollingIntervalSeconds;
+            yield return new WaitForSeconds(pollingIntervalSeconds);
+            timeWaited += pollingIntervalSeconds;
         }
-        SetStatus($"Polling {stage} task {taskId} timed out after {maxPollingTimeSeconds} seconds.", true); callback?.Invoke(null);
+        SetStatus($"Polling {stage} task {taskId} timed out after {maxPollingTimeSeconds} seconds.", true);
+        callback?.Invoke(null);
     }
 
-    // --- Model Loading (Using glTFast - Unchanged, assuming corrections were applied previously) ---
+    // --- Model Loading (Using glTFast - Unchanged) ---
     IEnumerator LoadModelIntoPreview(string modelUrl)
     {
         SetStatus($"Loading 3D model into preview: {modelUrl}");
@@ -810,7 +549,6 @@ public class MeshyController : MonoBehaviour
         foreach (Transform child in previewModelContainer.transform) { Destroy(child.gameObject); }
 
         var gltf = new GltfImport();
-
         Task<bool> loadTask = gltf.Load(modelUrl, null, System.Threading.CancellationToken.None);
         yield return new WaitUntil(() => loadTask.IsCompleted);
 
@@ -826,50 +564,41 @@ public class MeshyController : MonoBehaviour
                 currentPreviewModelInstance.name = $"PreviewModel_{DateTime.Now:yyyyMMddHHmmss}";
 
                 int targetLayer = LayerMaskUtility.GetLayerIndexFromMask(previewModelLayer);
-                if (targetLayer != -1)
-                {
-                    SetLayerRecursively(currentPreviewModelInstance, targetLayer);
-                }
-                else
-                {
-                    Debug.LogError($"Preview Model Layer could not be found! Check layer configuration and Inspector setting.");
-                }
+                if (targetLayer != -1) SetLayerRecursively(currentPreviewModelInstance, targetLayer);
+                else Debug.LogError($"Preview Model Layer could not be found!");
 
                 yield return null; // Wait a frame for bounds calculation
-
                 PositionPreviewCamera(currentPreviewModelInstance);
-                // Corrected state update after successful load
-                bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId); // Check if there *was* a preview task
-                SetInteractableStates(true, canRefine, true, true); // Enable Place now, potentially enable refine, enable voice
+
+                bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
+                SetInteractableStates(true, canRefine, true, true); // Enable Place
                 SetStatus("Model loaded into preview. Ready to Refine, Place, or Rotate.");
             }
             else
             {
                 string reason = "Unknown error during instantiation.";
-                if (instantiateTask.IsFaulted) reason = instantiateTask.Exception?.GetBaseException()?.Message ?? instantiateTask.Exception?.Message ?? "Task Faulted";
+                if (instantiateTask.IsFaulted) reason = instantiateTask.Exception?.GetBaseException()?.Message ?? "Task Faulted";
                 else if (!instantiateTask.Result) reason = "InstantiateMainSceneAsync returned false.";
-                else if (previewModelContainer.transform.childCount == 0) reason = "No objects were instantiated as children.";
+                else if (previewModelContainer.transform.childCount == 0) reason = "No objects instantiated.";
                 Debug.LogError($"Scene instantiation failed: {reason}");
                 if (instantiateTask.IsFaulted) Debug.LogException(instantiateTask.Exception);
                 SetStatus($"glTF scene instantiation failed: {reason}", true);
                 currentPreviewModelInstance = null;
-                // Corrected state update after instantiation fail
                 bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
-                SetInteractableStates(true, canRefine, false, true); // Cannot place, potentially can refine, enable voice
+                SetInteractableStates(true, canRefine, false, true); // Cannot place
             }
         }
         else
         {
             string reason = "Unknown error during loading.";
-            if (loadTask.IsFaulted) reason = loadTask.Exception?.GetBaseException()?.Message ?? loadTask.Exception?.Message ?? "Task Faulted";
+            if (loadTask.IsFaulted) reason = loadTask.Exception?.GetBaseException()?.Message ?? "Task Faulted";
             else if (!loadTask.Result) reason = "Load returned false.";
             Debug.LogError($"Failed to load GLB model data: {reason}");
             if (loadTask.IsFaulted) Debug.LogException(loadTask.Exception);
             SetStatus($"Failed to load GLB model data: {reason}", true);
             currentPreviewModelInstance = null;
-            // Corrected state update after load fail
             bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
-            SetInteractableStates(true, canRefine, false, true); // Cannot place, potentially can refine, enable voice
+            SetInteractableStates(true, canRefine, false, true); // Cannot place
         }
     }
 
@@ -939,7 +668,7 @@ public class MeshyController : MonoBehaviour
         isDraggingPreview = false;
     }
 
-    // --- Placement Logic (Unchanged, but check SetInteractableStates calls) ---
+    // --- Placement Logic (Now uses the 4-parameter SetInteractableStates) ---
 
     void HandlePlacement()
     {
@@ -947,12 +676,12 @@ public class MeshyController : MonoBehaviour
         if (Physics.Raycast(ray, out RaycastHit hit, 1000f, placementLayerMask))
         {
             currentPlacementModelInstance.transform.position = hit.point;
-            currentPlacementModelInstance.transform.up = hit.normal; // Align to surface
+            currentPlacementModelInstance.transform.up = hit.normal;
         }
         else
         {
-            currentPlacementModelInstance.transform.position = ray.GetPoint(15f); // Default distance
-            currentPlacementModelInstance.transform.rotation = Quaternion.identity; // Reset rotation if not hitting
+            currentPlacementModelInstance.transform.position = ray.GetPoint(15f);
+            currentPlacementModelInstance.transform.rotation = Quaternion.identity;
         }
         if (Input.GetMouseButtonDown(0)) FinalizePlacement();
         if (Input.GetMouseButtonDown(1)) CancelPlacement();
@@ -962,33 +691,33 @@ public class MeshyController : MonoBehaviour
     {
         isPlacingModel = false;
         if (currentPlacementModelInstance != null) { SetModelTransparency(currentPlacementModelInstance, false); }
-        // Restore state (including voice)
-        bool canPlace = currentPreviewModelInstance != null; // Should still reference the preview model
+
+        bool canPlace = currentPreviewModelInstance != null;
         bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
-        SetInteractableStates(true, canRefine, canPlace, true);
+        SetInteractableStates(true, canRefine, canPlace, true); // Restore state including voice
         SetStatus("Model placed. Ready for next action.");
-        currentPlacementModelInstance = null; // Release control
+        currentPlacementModelInstance = null;
         originalMaterials.Clear();
 
-        if (uiPanelToToggle != null) uiPanelToToggle.SetActive(true); // Show UI
+        if (uiPanelToToggle != null) uiPanelToToggle.SetActive(true);
         isPlacementUIHidden = false;
-        if (mainCameraController != null) mainCameraController.SetActive(false); // Disable camera movement
+        if (mainCameraController != null) mainCameraController.SetActive(false);
     }
 
     void CancelPlacement()
     {
         isPlacingModel = false;
         if (currentPlacementModelInstance != null) { Destroy(currentPlacementModelInstance); currentPlacementModelInstance = null; }
-        // Restore state (including voice)
+
         bool canPlace = currentPreviewModelInstance != null;
         bool canRefine = !string.IsNullOrEmpty(lastSuccessfulPreviewTaskId);
-        SetInteractableStates(true, canRefine, canPlace, true);
+        SetInteractableStates(true, canRefine, canPlace, true); // Restore state including voice
         SetStatus("Placement cancelled.");
         originalMaterials.Clear();
 
-        if (uiPanelToToggle != null) uiPanelToToggle.SetActive(true); // Show UI
+        if (uiPanelToToggle != null) uiPanelToToggle.SetActive(true);
         isPlacementUIHidden = false;
-        if (mainCameraController != null) mainCameraController.SetActive(false); // Disable camera movement
+        if (mainCameraController != null) mainCameraController.SetActive(false);
     }
 
     void SetModelTransparency(GameObject model, bool makeTransparent)
@@ -1004,7 +733,7 @@ public class MeshyController : MonoBehaviour
                 originalMaterials.AddRange(rend.sharedMaterials);
                 Material[] transparentMats = new Material[rend.sharedMaterials.Length];
                 for (int i = 0; i < transparentMats.Length; ++i) { transparentMats[i] = transparentMaterial; }
-                rend.materials = transparentMats; // Use .materials for instancing
+                rend.materials = transparentMats;
             }
         }
         else
@@ -1012,47 +741,58 @@ public class MeshyController : MonoBehaviour
             int materialIndex = 0;
             foreach (Renderer rend in renderers)
             {
-                int materialCount = rend.sharedMaterials.Length; // Use sharedMaterials to get count
+                int materialCount = rend.sharedMaterials.Length;
                 if (originalMaterials.Count >= materialIndex + materialCount)
                 {
                     Material[] originalMats = new Material[materialCount];
                     for (int i = 0; i < materialCount; i++)
                     {
-                        // Check if original material exists before assigning
                         if (materialIndex + i < originalMaterials.Count)
                             originalMats[i] = originalMaterials[materialIndex + i];
-                        else
-                        {
-                            Debug.LogWarning($"Missing original material at index {materialIndex + i} for renderer {rend.name}");
-                            // Optionally assign a default material here
-                        }
+                        else Debug.LogWarning($"Missing original material at index {materialIndex + i} for {rend.name}");
                     }
-                    rend.materials = originalMats; // Restore instances using .materials
+                    rend.materials = originalMats;
                     materialIndex += materialCount;
                 }
-                else { Debug.LogWarning($"Not enough cached materials ({originalMaterials.Count}) to restore for {rend.name} starting at index {materialIndex} (needs {materialCount})"); }
+                else { Debug.LogWarning($"Not enough cached materials for {rend.name}"); }
             }
-            originalMaterials.Clear(); // Clear after attempting restoration
+            originalMaterials.Clear();
         }
     }
+
+    // --- ADD THIS FUNCTION TO RECEIVE META VOICE SDK RESULTS ---
+    public void UpdatePromptFromMetaDictation(string dictatedText)
+    {
+        if (promptInput != null)
+        {
+            promptInput.text = dictatedText; // 將辨識結果設定到輸入框
+            Debug.Log($"Meta Dictation Result Received: {dictatedText}"); // 在 Console 輸出結果，方便除錯
+            // 你也可以選擇在這裡更新狀態文字
+            // SetStatus($"Voice input received: {dictatedText.Substring(0, Math.Min(dictatedText.Length, 30))}...");
+        }
+        else
+        {
+            Debug.LogError("MeshyController Error: Prompt Input field is not assigned!");
+        }
+    }
+    // --- END ADDED FUNCTION ---
 }
 
-// Helper utility for LayerMask conversion (Place outside the main class or in a separate file)
+// Helper utility for LayerMask conversion (Unchanged)
 public static class LayerMaskUtility
 {
-    // Converts a LayerMask value (bitmask) to the first layer index it represents
     public static int GetLayerIndexFromMask(LayerMask layerMask)
     {
         int layerMaskValue = layerMask.value;
-        if (layerMaskValue == 0) return -1; // No layer selected
+        if (layerMaskValue == 0) return -1;
 
         for (int i = 0; i < 32; i++)
         {
             if ((layerMaskValue & (1 << i)) != 0)
             {
-                return i; // Return the index of the first layer found in the mask
+                return i;
             }
         }
-        return -1; // Should not happen if value is not 0, but included for safety
+        return -1;
     }
 }
