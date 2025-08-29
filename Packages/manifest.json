@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "com.meta.xr.sdk.all": "76.0.0",
+    "com.meta.xr.sdk.all": "77.0.0",
     "com.simonoliver.unityfigma": "https://github.com/simonoliver/UnityFigmaBridge.git",
     "com.unity.cloud.gltfast": "6.12.1",
     "com.unity.collab-proxy": "2.8.2",
