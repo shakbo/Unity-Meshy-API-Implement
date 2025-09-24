@@ -1,0 +1,11 @@
+Model Information:
+* title:	Leather Chair 3D Model
+* source:	https://sketchfab.com/3d-models/leather-chair-3d-model-4067d2e44e1549b7abca8f449e648cf7
+* author:	Taohid Animation (https://sketchfab.com/taohidanimation)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Leather Chair 3D Model" (https://sketchfab.com/3d-models/leather-chair-3d-model-4067d2e44e1549b7abca8f449e648cf7) by Taohid Animation (https://sketchfab.com/taohidanimation) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

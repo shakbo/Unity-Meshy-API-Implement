@@ -1,0 +1,11 @@
+Model Information:
+* title:	Zig Zag Chair
+* source:	https://sketchfab.com/3d-models/zig-zag-chair-5af9f0be97e94bfcb0360eba0fea6e70
+* author:	ChameNoir (https://sketchfab.com/Chamenoir)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "Zig Zag Chair" (https://sketchfab.com/3d-models/zig-zag-chair-5af9f0be97e94bfcb0360eba0fea6e70) by ChameNoir (https://sketchfab.com/Chamenoir) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
